@@ -1,0 +1,2 @@
+class BoardCard < ApplicationRecord
+end
