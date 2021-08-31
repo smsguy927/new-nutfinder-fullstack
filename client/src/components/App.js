@@ -6,6 +6,8 @@ import GameOptions from "../pages/GameOptions";
 import Game from "../pages/Game";
 import Home from "../pages/Home";
 import ResetPassword from "./ResetPassword";
+import PastGames from "../pages/PastGames";
+import Stats from "../pages/Stats";
 
 
 
@@ -39,6 +41,12 @@ function App() {
           </Route>
           <Route path="/game">
             <Game user={user} />
+          </Route>
+          <Route path="/past-games">
+            <PastGames user={user} />
+          </Route>
+          <Route path="/stats">
+            <Stats user={user} />
           </Route>
 
           <Route path="/game-options">

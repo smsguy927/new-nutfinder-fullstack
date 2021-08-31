@@ -1,13 +1,13 @@
 class GamesController < ApplicationController
-  skip_before_action :authorize, only: %i[create index update]
+  skip_before_action :authorize, only: %i[create show update]
   def create
     game = Game.create!(create_params)
     render json: game, status: :created
   end
 
-  def index
-    user = User.find_by(id: index_params[:user_id])
-    my_games = Game.all.filter {|g|g.user_id == user.id}
+  def show
+    user = User.find_by(id: show_params[:id])
+    my_games = Game.all.filter {|g| g.user_id == user.id}
     render json: my_games, status: :ok
   end
 
@@ -25,8 +25,8 @@ class GamesController < ApplicationController
     params.permit(:user_id, :num_questions)
   end
 
-  def index_params
-    params.permit(:user_id)
+  def show_params
+    params.permit(:id)
   end
 
   def update_params

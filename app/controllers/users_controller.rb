@@ -9,6 +9,13 @@ class UsersController < ApplicationController
     render json: user, status: :created
   end
 
+  def show
+    user = User.find_by(id: show_params[:user_id])
+    my_games = Game.all.filter {|g| g.user_id == user.id}
+    render json: my_games, status: :ok
+  end
+
+
   def update
     puts update_params[:id]
     user = User.find_by(id: update_params[:id])

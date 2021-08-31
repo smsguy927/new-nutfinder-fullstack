@@ -4,7 +4,7 @@ require_relative '../models/board_internal'
 require_relative '../models/card_internal'
 
 class QuestionsController < ApplicationController
-  skip_before_action :authorize, only: %i[create update]
+  skip_before_action :authorize, only: %i[create show update]
   CARD_SEP = '_'.freeze
   COMBO_SEP = '__'.freeze
 
@@ -16,6 +16,12 @@ class QuestionsController < ApplicationController
     question.update(answer: internal_board.nut_combos.join(''))
     puts question.answer
     render json: question, status: :created
+  end
+
+  def show
+    game = Game.find_by(id: show_params[:id])
+    my_questions = Question.all.filter {|q| q.game_id == game.id}
+    render json: my_questions, status: :ok
   end
 
   def update
@@ -32,6 +38,10 @@ class QuestionsController < ApplicationController
 
   def create_params
     params.permit(:game_id, :question_num, :cards)
+  end
+
+  def show_params
+    params.permit(:id)
   end
 
   def update_params
