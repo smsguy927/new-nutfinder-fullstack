@@ -1,10 +1,11 @@
 # frozen_string_literal: true
-
 require_relative './card_internal'
+
 
 class BoardInternal
   attr_reader :cards, :sorted_cards, :nut_combos, :nut_board, :one_card_nuts, :flush_suit, :rank_counts, :pair_type,
-              :nut_type, :sf_type, :sf_special_type, :sf_alt_nuts, :gap_ranks, :straight_type, :sf_straight_ranks
+              :nut_type, :sf_type, :sf_pair_type, :sf_alt_nuts, :gap_ranks, :straight_type, :sf_straight_ranks,
+              :compound_sf_ranks, :compound_sf_gaps, :compound_sf_gap_sizes, :consecutive_gap_sizes
 
   BOARD_SIZE = 5
   QUADS_COUNTS_SIZE = 2
@@ -22,6 +23,7 @@ class BoardInternal
   MAX_GAPS_SF_STRAIGHT = 2
   MAX_GAPS_ONE_CARD_SF = 2
   MIN_RANKS_SF_STRAIGHT = 3
+  FLUSH_RANKS_OFFSET = 2
   ANY_RANK = 'X'
   ANY_SUIT = 'x'
   CARD_SEP = '_'
@@ -31,16 +33,15 @@ class BoardInternal
     ZERO_GAPS: 0,
     ONE_GAP: 1,
     TWO_GAPS: 2,
-    TWO_GAP_ONE_GAP: 3,
-    ONE_CARD: 4,
-    ONE_CARD_SW: 5,
-    STEEL_WHEEL: 6,
-    ROYAL_FLUSH: 7,
+    ONE_CARD: 3,
+    ONE_CARD_SW: 4,
+    STEEL_WHEEL: 5,
+    ROYAL_FLUSH: 6,
+    RF_STEEL: 7,
     KQJ: 8,
-    FOUR_THREE_TWO: 9
+    FOUR_THREE_TWO: 9,
+    COMPOUND: 10
   }.freeze
-
-  # TODO: Identify TWO_GAP_ONE_GAP sf
 
   NUT_TYPES = {
     NUT_BOARD: 0,
@@ -76,12 +77,13 @@ class BoardInternal
     QUAD_ACES: 15
   }.freeze
 
-  SF_SPECIAL_TYPES = {
+  SF_PAIR_TYPES = {
     TRIPS: 0,
     TOP_PAIRED_NEXT_GAP: 1,
     PAIR_IN_GAP: 2,
     FIVES_ON_432: 3,
-    TENS_ON_KQJ: 4
+    TENS_ON_KQJ: 4,
+    OTHER_PAIRED: 5
   }.freeze
 
   STRAIGHT_TYPES = {
@@ -98,6 +100,10 @@ class BoardInternal
     @cards = []
     @sorted_cards = []
     @nut_combos = []
+    @compound_sf_ranks = []
+    @compound_sf_gaps = []
+    @compound_sf_gap_sizes = []
+    @consecutive_gap_sizes = []
     @nut_board = false
   end
 
@@ -274,8 +280,8 @@ class BoardInternal
 
   def set_royal_flush(sf_ranks)
     filtered_ranks = find_broadway_ranks(sf_ranks)
-    sw_gaps = find_rf_gaps(filtered_ranks)
-    set_gaps(sw_gaps)
+    rf_gaps = find_rf_gaps(filtered_ranks)
+    set_gaps(rf_gaps)
   end
 
   def find_wheel_ranks(ranks)
@@ -287,6 +293,14 @@ class BoardInternal
 
     broadway_cards = sf_ranks.filter { |rank| broadway_card?(rank) }.size
     broadway_cards >= MIN_RANKS_SF_STRAIGHT
+  end
+
+  def royal_flush_steel_wheel?(sf_ranks)
+    return false unless sf_ranks.include?('A')
+
+    broadway_cards = sf_ranks.filter { |rank| broadway_card?(rank) }.size
+    wheel_cards = sf_ranks.filter { |rank| wheel_card?(rank) }.size
+    broadway_cards >= MIN_RANKS_SF_STRAIGHT && wheel_cards >= MIN_RANKS_SF_STRAIGHT
   end
 
   def kqj_straight_flush?(sf_ranks)
@@ -324,13 +338,94 @@ class BoardInternal
     end
   end
 
+  def set_rf_steel(flush_ranks)
+    set_royal_flush(flush_ranks)
+  end
+
+  def set_compound_sf(flush_ranks)
+    ranks_left = flush_ranks.size
+    ranks_index = RANKS.index(flush_ranks[0])
+    i = 0
+    while i < flush_ranks.size - 1
+      ranks_left -= 1
+      next_rank = flush_ranks[i + 1]
+      next_flush_ranks_index = RANKS.index(next_rank).nil? ? 0 : RANKS.index(next_rank)
+      gap_size = next_flush_ranks_index - 1 - ranks_index
+      @compound_sf_gap_sizes.push(gap_size)
+      i += 1
+      ranks_index = next_flush_ranks_index
+    end
+    i = 0
+    while i < @compound_sf_gap_sizes.size - 1
+      total_gap_sizes = @compound_sf_gap_sizes[i] + @compound_sf_gap_sizes[i + 1]
+      @consecutive_gap_sizes.push(total_gap_sizes)
+      i += 1
+    end
+    if consecutive_gap_sizes.size >= 2 && consecutive_gap_sizes[0].zero? && consecutive_gap_sizes[1] == 1
+      three_consecutive_sf_cards?(flush_ranks)
+      @sf_type = set_three_consecutive_sf_type(flush_ranks)
+    elsif @consecutive_gap_sizes.filter(&:zero?).size > 1 || consecutive_gap_sizes.size >= 2 && consecutive_gap_sizes[1].zero? && consecutive_gap_sizes[0] == 1 || compound_sf_gap_sizes[0] == 0 && compound_sf_gap_sizes[1] == 1 && compound_sf_gap_sizes[2] == 0 || compound_sf_gap_sizes[1]== 0 && compound_sf_gap_sizes[2] == 1 && compound_sf_gap_sizes[3] == 0
+      set_one_card_sf(flush_ranks)
+    elsif @consecutive_gap_sizes.filter { |size| size <= MAX_GAPS_SF_STRAIGHT }.size > 1
+      @sf_type = SF_TYPES[:COMPOUND]
+      i = 0
+      while i < @consecutive_gap_sizes.size
+        if @consecutive_gap_sizes[i] <= MAX_GAPS_SF_STRAIGHT
+
+          current_sf_ranks = flush_ranks[i..i + FLUSH_RANKS_OFFSET]
+          current_sf_gaps = @compound_sf_gap_sizes[i..i + 1]
+          set_sf_type_2(current_sf_ranks, current_sf_gaps)
+
+        end
+        i += 1
+      end
+    end
+  end
+
+  def set_compound_gaps(new_sf_blockers)
+    @compound_sf_gaps.push(new_sf_blockers.join)
+  end
+
+  def set_compound_sf_straight_ranks(sf_ranks)
+    @compound_sf_ranks.push(sf_ranks.join)
+  end
+
+  def set_sf_type_2(sf_ranks, sf_gaps)
+
+    i = 0
+    ranks_left = sf_ranks.size
+    ranks_index = RANKS.index(sf_ranks[0])
+    new_sf_blockers = []
+
+
+    while i < ranks_left - 1
+      next_rank = sf_ranks[i + 1]
+      next_flush_ranks_index = RANKS.index(next_rank).nil? ? 0 : RANKS.index(next_rank)
+      gap_size = sf_gaps[i]
+
+      add_gaps(new_sf_blockers, gap_size, ranks_index + 1)
+
+
+      i += 1
+      ranks_index = next_flush_ranks_index
+    end
+
+    set_compound_gaps(new_sf_blockers)
+    set_compound_sf_straight_ranks(sf_ranks)
+  end
+
   def set_sf_type
     flush_ranks = []
     sorted_cards.each do |card|
       flush_ranks.push(card.rank) if card.suit == flush_suit
     end
+    if royal_flush_steel_wheel?(flush_ranks)
+      @sf_type = SF_TYPES[:RF_STEEL]
+      set_rf_steel(flush_ranks)
+      return
+    end
     if flush_ranks.size >= ONE_CARD_NUT_SF_COUNT
-      set_one_card_sf(flush_ranks)
+      set_compound_sf(flush_ranks)
       return unless @sf_type.nil?
     end
     if three_consecutive_sf_cards?(flush_ranks)
@@ -420,7 +515,7 @@ class BoardInternal
   end
 
   def set_one_card_sf(sf_ranks)
-    
+
     current_gaps = 0
     total_gaps = 0
     i = 0
@@ -431,7 +526,7 @@ class BoardInternal
     while i < sf_ranks.size
       sf_cards.push(sf_ranks[i])
       break if sf_cards.size >= ONE_CARD_NUT_SF_COUNT
-      return if sf_cards.size >= MIN_RANKS_SF_STRAIGHT && total_gaps == 0
+      #return if sf_cards.size >= MIN_RANKS_SF_STRAIGHT && total_gaps.zero?
 
       ranks_left -= 1
       next_rank = sf_ranks[i + 1]
@@ -458,6 +553,7 @@ class BoardInternal
     if sf_cards.size >= ONE_CARD_NUT_SF_COUNT
       @sf_type = SF_TYPES[:ONE_CARD]
       set_gaps(sf_blockers)
+      set_sf_straight_ranks(sf_cards)
       @one_card_nuts = calc_one_card_sf_nuts(sf_blockers, sf_cards)
     end
   end
@@ -490,7 +586,7 @@ class BoardInternal
 
   ###############################################################################################
   def set_sf_alt_nuts
-    set_sf_special_type
+    set_sf_pair_type if board_paired?
   end
 
   def board_trips?
@@ -539,19 +635,23 @@ class BoardInternal
     sf_type == SF_TYPES[:KQJ] && sorted_cards[FOURTH_CARD_INDEX].rank == 'T' && sorted_cards[LAST_CARD_INDEX].rank == 'T'
   end
 
-  def set_sf_special_type
-    return unless board_paired?
+  def set_sf_pair_type
+    @sf_pair_type = calc_sf_pair_type
+  end
 
+  def calc_sf_pair_type
     if board_trips?
-      @sf_special_type = SF_SPECIAL_TYPES[:TRIPS]
+      SF_PAIR_TYPES[:TRIPS]
     elsif fives_on_432?
-      @sf_special_type = SF_SPECIAL_TYPES[:FIVES_ON_432]
+      SF_PAIR_TYPES[:FIVES_ON_432]
     elsif tens_on_kqj?
-      @sf_special_type = SF_SPECIAL_TYPES[:TENS_ON_KQJ]
+      SF_PAIR_TYPES[:TENS_ON_KQJ]
     elsif top_paired_next_gap?
-      @sf_special_type = SF_SPECIAL_TYPES[:TOP_PAIRED_NEXT_GAP]
+      SF_PAIR_TYPES[:TOP_PAIRED_NEXT_GAP]
     elsif pair_in_gap?
-      @sf_special_type = SF_SPECIAL_TYPES[:PAIR_IN_GAP]
+      SF_PAIR_TYPES[:PAIR_IN_GAP]
+    else
+      SF_PAIR_TYPES[:OTHER_PAIRED]
     end
   end
 
@@ -660,6 +760,9 @@ class BoardInternal
     @sf_straight_ranks = ranks.join
   end
 
+  ######################################################################################################################
+  ######################################################################################################################
+
   def set_set_nut_combos
     nuts = "#{sorted_cards[0].rank}#{ANY_SUIT}#{CARD_SEP}#{sorted_cards[0].rank}#{ANY_SUIT}"
     @nut_combos.push(nuts)
@@ -671,6 +774,19 @@ class BoardInternal
   end
 
   def set_one_card_sf_nut_combos
+    if gap_ranks.size.positive?
+      set_one_card_gap_sf_nut_combos
+    else
+      set_one_card_no_gap_sf_nut_combos
+    end
+  end
+
+  def set_one_card_no_gap_sf_nut_combos
+    nuts = "#{RANKS[RANKS.index(sf_straight_ranks[0]) - 1]}#{flush_suit}#{CARD_SEP}#{ANY_RANK}#{ANY_SUIT}"
+    @nut_combos.push(nuts)
+  end
+
+  def set_one_card_gap_sf_nut_combos
     nuts = "#{gap_ranks[0]}#{flush_suit}#{CARD_SEP}#{ANY_RANK}#{ANY_SUIT}"
     @nut_combos.push(nuts)
   end
@@ -756,28 +872,48 @@ class BoardInternal
     @nut_combos.push(nuts)
   end
 
-  def set_sf_special_nut_combos
-    case sf_special_type
-    when SF_SPECIAL_TYPES[:TRIPS]
-      set_sf_trips_nuts
-    when SF_SPECIAL_TYPES[:TOP_PAIRED_NEXT_GAP]
-      set_sf_top_paired_nuts
-    when SF_SPECIAL_TYPES[:PAIR_IN_GAP]
-      set_sf_pair_in_gap_nuts
-    when SF_SPECIAL_TYPES[:FIVES_ON_432]
-      set_sf_fives_on_432_nuts
-    when SF_SPECIAL_TYPES[:TENS_ON_KQJ]
-      set_sf_tens_on_kqj_nuts
+  def set_sf_other_paired_one_gap_nuts
+    nuts = "#{RANKS[RANKS.index(sf_straight_ranks[0]) - 1]}#{flush_suit}#{CARD_SEP}#{gap_ranks[0]}#{flush_suit}#{COMBO_SEP}#{gap_ranks[0]}#{flush_suit}#{CARD_SEP}#{RANKS[RANKS.index(sf_straight_ranks[2]) + 1]}#{flush_suit}"
+    @nut_combos.push(nuts)
+  end
+
+  def set_sf_other_paired_two_gaps_nuts
+    nuts = "#{gap_ranks[0]}#{flush_suit}#{CARD_SEP}#{gap_ranks[1]}#{flush_suit}"
+    @nut_combos.push(nuts)
+  end
+
+  def set_sf_other_paired_nuts
+    if gap_ranks.size == 1
+      set_sf_other_paired_one_gap_nuts
     else
-      puts "I can't set the sf special type"
+      set_sf_other_paired_two_gaps_nuts
+    end
+  end
+
+  def set_sf_pair_nut_combos
+    case sf_pair_type
+    when SF_PAIR_TYPES[:TRIPS]
+      set_sf_trips_nuts
+    when SF_PAIR_TYPES[:TOP_PAIRED_NEXT_GAP]
+      set_sf_top_paired_nuts
+    when SF_PAIR_TYPES[:PAIR_IN_GAP]
+      set_sf_pair_in_gap_nuts
+    when SF_PAIR_TYPES[:FIVES_ON_432]
+      set_sf_fives_on_432_nuts
+    when SF_PAIR_TYPES[:TENS_ON_KQJ]
+      set_sf_tens_on_kqj_nuts
+    when SF_PAIR_TYPES[:OTHER_PAIRED]
+      set_sf_other_paired_nuts
+    else
+      puts "I can't set the sf pair type"
     end
   end
 
   def set_sf_nut_combos
-    if sf_special_type.nil?
+    if sf_pair_type.nil?
       set_sf_reg_nut_combos
     else
-      set_sf_special_nut_combos
+      set_sf_pair_nut_combos
     end
   end
 
@@ -787,10 +923,20 @@ class BoardInternal
     @nut_combos.push(nuts)
   end
 
+  def set_one_gap_compound_sf_nuts(sf_combo_index)
+
+    "#{RANKS[RANKS.index(@compound_sf_ranks[sf_combo_index][0]) - 1]}#{flush_suit}#{CARD_SEP}#{compound_sf_gaps[sf_combo_index][0]}#{flush_suit}#{COMBO_SEP}#{compound_sf_gaps[sf_combo_index][0]}#{flush_suit}#{CARD_SEP}#{RANKS[RANKS.index(@compound_sf_ranks[sf_combo_index][2]) + 1]}#{flush_suit}"
+
+  end
+
   def set_two_gap_sf_nuts
     nut_flush_rank = find_highest_missing_flush_rank
     nuts = "#{gap_ranks[0]}#{flush_suit}#{CARD_SEP}#{gap_ranks[1]}#{flush_suit}#{COMBO_SEP}#{nut_flush_rank}#{flush_suit}#{CARD_SEP}#{gap_ranks[0]}#{flush_suit}#{COMBO_SEP}#{nut_flush_rank}#{flush_suit}#{CARD_SEP}#{gap_ranks[1]}#{flush_suit}"
     @nut_combos.push(nuts)
+  end
+
+  def set_two_gap_compound_sf_nuts(sf_combo_index)
+    "#{compound_sf_gaps[sf_combo_index][0]}#{flush_suit}#{CARD_SEP}#{compound_sf_gaps[sf_combo_index][1]}#{flush_suit}"
   end
 
   def set_steel_wheel_sf_nuts
@@ -812,6 +958,36 @@ class BoardInternal
     @nut_combos.push(nuts)
   end
 
+  def set_rf_steel_nuts
+    nuts = "#{gap_ranks[0]}#{flush_suit}#{CARD_SEP}#{gap_ranks[1]}#{flush_suit}"
+    @nut_combos.push(nuts)
+  end
+
+  def set_zero_gap_compound_sf_nuts(i)
+    # code here
+  end
+
+  def set_sf_compound_nuts
+    i = 0
+    result = []
+    while i < @compound_sf_ranks.size
+      case @consecutive_gap_sizes[i]
+      when SF_TYPES[:ZERO_GAPS]
+        result.push(set_zero_gap_compound_sf_nuts(i))
+      when SF_TYPES[:ONE_GAP]
+        result.push(set_one_gap_compound_sf_nuts(i))
+      when SF_TYPES[:TWO_GAPS]
+        result.push(set_two_gap_compound_sf_nuts(i))
+      end
+      i += 1
+    end
+    # this part might be broken, but I think it's ok
+    result = result.join(COMBO_SEP)
+    result = result.split(COMBO_SEP)
+    @nut_combos.push(result.slice(0,2).join(COMBO_SEP))
+    #@nut_combos.push(result.slice(0,1).join(COMBO_SEP))
+  end
+
   def set_sf_reg_nut_combos
     case sf_type
     when SF_TYPES[:ZERO_GAPS]
@@ -824,10 +1000,14 @@ class BoardInternal
       set_steel_wheel_sf_nuts
     when SF_TYPES[:ROYAL_FLUSH]
       set_royal_flush_nuts
+    when SF_TYPES[:RF_STEEL]
+      set_rf_steel_nuts
     when SF_TYPES[:KQJ]
       set_sf_kqj_nuts
     when SF_TYPES[:FOUR_THREE_TWO]
       set_sf_432_nuts
+    when SF_TYPES[:COMPOUND]
+      set_sf_compound_nuts
     else
       puts "I can't set the sf reg type"
     end
@@ -958,4 +1138,3 @@ class BoardInternal
     end
   end
 end
-

@@ -141,7 +141,7 @@ function Game({user, game, setGame, onStartGame}) {
 
   function handleGameOver() {
     setGameOver(true)
-    alert(results.length)
+
     fetch(`http://localhost:3000/games/${game.id}`, {
       method: "PATCH",
       headers: {
